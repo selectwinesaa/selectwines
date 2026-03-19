@@ -31,7 +31,7 @@ export default async function handler(req, res) {
         expiresInDays: 1 
       },
       items: [{
-        title: "Compra Select Wines",
+        title: "Varejo",
         amount: amountCentavos,
         quantity: 1
       }],
