@@ -11,19 +11,19 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Configuração ausente: PAYEVO_SECRET_KEY" });
     }
 
-    // Convertendo para centavos (Ex: 118.54 -> 11854)
-    const amountCentavos = Math.round(parseFloat(totalPrice) * 100);
-    const cleanCPF = cpf?.replace(/\D/g, "");
-    const cleanPhone = telefone?.replace(/\D/g, "");
+    // Garante que o valor seja um número e converte para centavos (inteiro)
+    const amountCentavos = Math.round(Number(totalPrice) * 100);
 
     const payload = {
       paymentMethod: "PIX",
+      // ADICIONADO: Algumas APIs exigem o amount na raiz do body
+      amount: amountCentavos, 
       customer: {
         name: `${nome} ${sobrenome}`.trim(),
         email: email.trim(),
-        phone: cleanPhone,
+        phone: telefone?.replace(/\D/g, ""),
         document: {
-          number: cleanCPF,
+          number: cpf?.replace(/\D/g, ""),
           type: "CPF"
         }
       },
@@ -35,7 +35,6 @@ export default async function handler(req, res) {
         amount: amountCentavos,
         quantity: 1
       }],
-      // CORREÇÃO: Removido ou transformado em objeto
       metadata: {
         order_id: `Pedido_${Date.now()}`
       }
