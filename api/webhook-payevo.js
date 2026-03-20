@@ -4,13 +4,19 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { transaction_id, status } = req.body;
+    // Log completo do body para debug
+    console.log("Webhook PayEvo body:", JSON.stringify(req.body));
 
-    if (!transaction_id || !status) {
-      return res.status(400).json({ error: "Missing transaction_id or status" });
+    // Aceitar diferentes formatos de campo
+    const transactionId = req.body.id || req.body.transaction_id || req.body.transactionId;
+    const status = req.body.status || req.body.currentStatus;
+
+    if (!transactionId || !status) {
+      console.error("Missing fields. Body:", JSON.stringify(req.body));
+      return res.status(400).json({ error: "Missing transaction id or status" });
     }
 
-    // Mapear status da PayEvo para status da Utmify
+    // Mapear status da PayEvo para Utmify (aceita maiúsculo e minúsculo)
     const statusMap = {
       paid: "paid",
       approved: "paid",
@@ -18,6 +24,7 @@ export default async function handler(req, res) {
       refunded: "refunded",
       chargeback: "refunded",
       canceled: "refunded",
+      cancelled: "refunded",
     };
 
     const utmifyStatus = statusMap[status.toLowerCase()];
@@ -29,7 +36,7 @@ export default async function handler(req, res) {
 
     const now = new Date().toISOString();
     const updateBody = {
-      orderId: String(transaction_id),
+      orderId: String(transactionId),
       status: utmifyStatus,
     };
 
@@ -38,6 +45,8 @@ export default async function handler(req, res) {
     } else if (utmifyStatus === "refunded") {
       updateBody.refundedAt = now;
     }
+
+    console.log("Utmify update body:", JSON.stringify(updateBody));
 
     const utmifyResponse = await fetch("https://api.utmify.com.br/api-credentials/orders", {
       method: "POST",
