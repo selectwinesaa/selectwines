@@ -1,72 +1,107 @@
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ message: 'Método não permitido' });
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
-    const { nome, sobrenome, email, cpf, telefone, totalPrice } = req.body;
-    const SECRET_KEY = process.env.PAYEVO_SECRET_KEY;
+    const {
+      name,
+      email,
+      phone,
+      cpf,
+      amount,
+      product_name,
+      product_id,
+      // UTM params
+      utm_source,
+      utm_campaign,
+      utm_medium,
+      utm_content,
+      utm_term,
+      src,
+      sck,
+    } = req.body;
 
-    if (!SECRET_KEY) {
-      return res.status(500).json({ error: "Configuração ausente: PAYEVO_SECRET_KEY" });
-    }
-
-    // Garante que o valor seja um número e converte para centavos (inteiro)
-    const amountCentavos = Math.round(Number(totalPrice) * 100);
-
-    const payload = {
-      paymentMethod: "PIX",
-      // ADICIONADO: Algumas APIs exigem o amount na raiz do body
-      amount: amountCentavos, 
-      customer: {
-        name: `${nome} ${sobrenome}`.trim(),
-        email: email.trim(),
-        phone: telefone?.replace(/\D/g, ""),
-        document: {
-          number: cpf?.replace(/\D/g, ""),
-          type: "CPF"
-        }
-      },
-      pix: { 
-        expiresInDays: 1 
-      },
-      items: [{
-        title: "Varejo",
-        amount: amountCentavos,
-        quantity: 1
-      }],
-      metadata: {
-        order_id: `Pedido_${Date.now()}`
-      }
-    };
-
-    const auth = Buffer.from(`${SECRET_KEY}:`).toString('base64');
-
-    const response = await fetch("https://apiv2.payevo.com.br/functions/v1/transactions", {
-      method: 'POST',
+    // 1. Criar transação PIX na PayEvo
+    const payevoResponse = await fetch("https://api.payevo.com.br/api/v1/transaction", {
+      method: "POST",
       headers: {
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/json'
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.PAYEVO_API_KEY}`,
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({
+        customer: { name, email, phone, cpf },
+        amount,
+        payment_method: "pix",
+        product_name,
+      }),
     });
 
-    const data = await response.json();
-
-    if (!response.ok) {
-      return res.status(response.status).json({
-        success: false,
-        message: "A PayEvo recusou a transação",
-        details: data
-      });
+    if (!payevoResponse.ok) {
+      const err = await payevoResponse.text();
+      console.error("PayEvo error:", err);
+      return res.status(500).json({ error: "Erro ao criar transação PayEvo" });
     }
 
-    return res.status(200).json(data);
+    const payevoData = await payevoResponse.json();
+    const orderId = payevoData.transaction_id || payevoData.id;
 
+    // 2. Enviar pedido para Utmify com status waiting_payment
+    try {
+      await fetch("https://api.utmify.com.br/api-credentials/orders", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-token": process.env.UTMIFY_API_TOKEN,
+        },
+        body: JSON.stringify({
+          orderId: String(orderId),
+          platform: "PayEvo",
+          paymentMethod: "pix",
+          status: "waiting_payment",
+          createdAt: new Date().toISOString(),
+          approvedDate: null,
+          refundedAt: null,
+          customer: {
+            name,
+            email,
+            phone,
+            document: cpf,
+          },
+          products: [
+            {
+              id: product_id || "1",
+              name: product_name || "Produto",
+              planName: null,
+              quantity: 1,
+              priceInCents: Math.round(amount * 100),
+            },
+          ],
+          trackingParameters: {
+            src: src || null,
+            sck: sck || null,
+            utm_source: utm_source || null,
+            utm_campaign: utm_campaign || null,
+            utm_medium: utm_medium || null,
+            utm_content: utm_content || null,
+            utm_term: utm_term || null,
+          },
+          commission: {
+            totalPriceInCents: Math.round(amount * 100),
+            gatewayFeeInCents: 0,
+            userCommissionInCents: Math.round(amount * 100),
+            currency: "BRL",
+          },
+        }),
+      });
+    } catch (utmifyErr) {
+      console.error("Utmify tracking error (non-blocking):", utmifyErr);
+    }
+
+    // 3. Retornar dados da transação para o frontend
+    return res.status(200).json(payevoData);
   } catch (error) {
-    return res.status(500).json({ 
-      error: "Erro crítico no servidor", 
-      details: error.message 
-    });
+    console.error("Checkout error:", error);
+    return res.status(500).json({ error: "Erro interno no checkout" });
   }
 }
