@@ -12,7 +12,6 @@ export default async function handler(req, res) {
       amount,
       product_name,
       product_id,
-      // UTM params
       utm_source,
       utm_campaign,
       utm_medium,
@@ -22,31 +21,64 @@ export default async function handler(req, res) {
       sck,
     } = req.body;
 
-    // 1. Criar transação PIX na PayEvo
-    const payevoResponse = await fetch("https://api.payevo.com.br/api/v1/transaction", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.PAYEVO_API_KEY}`,
+    // Basic Auth conforme documentação PayEvo
+    const basicAuth = Buffer.from(process.env.PAYEVO_API_KEY).toString("base64");
+
+    const payevoBody = {
+      customer: {
+        name,
+        email,
+        phone,
+        document: {
+          number: cpf,
+          type: "CPF",
+        },
       },
-      body: JSON.stringify({
-        customer: { name, email, phone, cpf },
-        amount,
-        payment_method: "pix",
-        product_name,
-      }),
-    });
+      paymentMethod: "PIX",
+      pix: {
+        expiresInDays: 1,
+      },
+      items: [
+        {
+          name: product_name || "Produto",
+          quantity: 1,
+          amount: amount,
+        },
+      ],
+      amount: amount,
+      postbackUrl: "https://selectwines.online/api/webhook-payevo",
+      description: product_name || "Pedido Select Wines",
+    };
+
+    console.log("PayEvo request:", JSON.stringify(payevoBody));
+
+    const payevoResponse = await fetch(
+      "https://apiv2.payevo.com.br/functions/v1/transactions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Basic " + basicAuth,
+        },
+        body: JSON.stringify(payevoBody),
+      }
+    );
 
     if (!payevoResponse.ok) {
       const err = await payevoResponse.text();
-      console.error("PayEvo error:", err);
-      return res.status(500).json({ error: "Erro ao criar transação PayEvo" });
+      console.error("PayEvo status:", payevoResponse.status);
+      console.error("PayEvo response:", err);
+      return res.status(500).json({
+        error: "Erro ao criar transação PayEvo",
+        details: err,
+        status: payevoResponse.status,
+      });
     }
 
     const payevoData = await payevoResponse.json();
-    const orderId = payevoData.transaction_id || payevoData.id;
+    const orderId = payevoData.id;
 
-    // 2. Enviar pedido para Utmify com status waiting_payment
+    // Enviar pedido para Utmify com status waiting_payment
     try {
       await fetch("https://api.utmify.com.br/api-credentials/orders", {
         method: "POST",
@@ -62,19 +94,14 @@ export default async function handler(req, res) {
           createdAt: new Date().toISOString(),
           approvedDate: null,
           refundedAt: null,
-          customer: {
-            name,
-            email,
-            phone,
-            document: cpf,
-          },
+          customer: { name, email, phone, document: cpf },
           products: [
             {
               id: product_id || "1",
               name: product_name || "Produto",
               planName: null,
               quantity: 1,
-              priceInCents: Math.round(amount * 100),
+              priceInCents: amount,
             },
           ],
           trackingParameters: {
@@ -87,9 +114,9 @@ export default async function handler(req, res) {
             utm_term: utm_term || null,
           },
           commission: {
-            totalPriceInCents: Math.round(amount * 100),
+            totalPriceInCents: amount,
             gatewayFeeInCents: 0,
-            userCommissionInCents: Math.round(amount * 100),
+            userCommissionInCents: amount,
             currency: "BRL",
           },
         }),
@@ -98,7 +125,6 @@ export default async function handler(req, res) {
       console.error("Utmify tracking error (non-blocking):", utmifyErr);
     }
 
-    // 3. Retornar dados da transação para o frontend
     return res.status(200).json(payevoData);
   } catch (error) {
     console.error("Checkout error:", error);
