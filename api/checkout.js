@@ -1,17 +1,17 @@
 export default async function handler(req, res) {
-  // Garantir que apenas requisições POST sejam aceitas
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
-    // 1. Extrair dados do corpo da requisição
+    // 1. Pegar os dados EXATAMENTE como o seu formulário envia
     const {
-      name,
+      nome,
+      sobrenome,
       email,
-      phone,
+      telefone,
       cpf,
-      amount,
+      totalPrice, // No seu log está totalPrice
       product_name,
       product_id,
       utm_source,
@@ -23,30 +23,34 @@ export default async function handler(req, res) {
       sck,
     } = req.body;
 
-    // 2. Validação de Segurança: Evita o erro "Cannot read properties of undefined (reading 'replace')"
-    if (!name || !email || !cpf || !amount || !phone) {
+    // 2. Validação usando os nomes em português
+    if (!nome || !email || !cpf || !totalPrice || !telefone) {
       return res.status(400).json({
         error: "Dados incompletos",
-        message: "Os campos name, email, phone, cpf e amount são obrigatórios.",
+        message: "Os campos nome, email, telefone, cpf e totalPrice são obrigatórios.",
       });
     }
 
-    // 3. Carregar Chaves da Vercel (conforme seus nomes no print)
     const secretKey = process.env.PAYEVO_SECRET_KEY;
     const utmifyToken = process.env.UTMIFY_API_TOKEN;
 
     if (!secretKey || !utmifyToken) {
-      console.error("ERRO: Variáveis de ambiente não configuradas na Vercel.");
-      return res.status(500).json({ error: "Erro de configuração no servidor." });
+      return res.status(500).json({ error: "Erro de configuração (Vercel)" });
     }
 
-    // 4. Preparar dados (Limpeza de caracteres e formatação)
+    // 3. Preparação dos dados
     const basicAuth = Buffer.from(secretKey).toString("base64");
-    const cleanCpf = String(cpf).replace(/\D/g, ""); // Remove pontos e traços
-    const cleanPhone = String(phone).replace(/\D/g, ""); // Remove parênteses e espaços
-    const valueInCents = parseInt(amount); // Deve ser um número inteiro (centavos)
+    
+    // Unindo nome e sobrenome para a PayEvo
+    const nomeCompleto = `${nome} ${sobrenome || ""}`.trim();
+    const cleanCpf = String(cpf).replace(/\D/g, "");
+    const cleanPhone = String(telefone).replace(/\D/g, "");
+    
+    // Convertendo totalPrice para centavos (Ex: 118.54 -> 11854)
+    // Se o seu valor já vem multiplicado (ex: 11854), use apenas parseInt
+    const valueInCents = Math.round(parseFloat(totalPrice)); 
 
-    // 5. Chamada para PayEvo (Seguindo sua documentação técnica)
+    // 4. Chamada PayEvo
     const payevoResponse = await fetch(
       "https://apiv2.payevo.com.br/functions/v1/transactions",
       {
@@ -57,29 +61,24 @@ export default async function handler(req, res) {
         },
         body: JSON.stringify({
           customer: {
-            name: name,
+            name: nomeCompleto,
             email: email,
             phone: cleanPhone,
-            document: {
-              number: cleanCpf,
-              type: "CPF",
-            },
+            document: { number: cleanCpf, type: "CPF" },
           },
           paymentMethod: "PIX",
-          pix: {
-            expiresInDays: 1, // Campo obrigatório
-          },
+          pix: { expiresInDays: 1 },
           items: [
             {
-              title: product_name || "Produto", // Doc pede 'title'
-              unitPrice: valueInCents,          // Doc pede 'unitPrice'
+              title: product_name || "Pedido Select Wines",
+              unitPrice: valueInCents,
               quantity: 1,
-              externalRef: String(product_id || "PROD001"), // Campo obrigatório
+              externalRef: String(product_id || "PROD_01"),
             },
           ],
           amount: valueInCents,
           postbackUrl: "https://selectwines.online/api/webhook-payevo",
-          description: product_name || "Pedido Select Wines",
+          description: product_name || "Compra Select Wines",
         }),
       }
     );
@@ -87,18 +86,15 @@ export default async function handler(req, res) {
     const payevoData = await payevoResponse.json();
 
     if (!payevoResponse.ok) {
-      console.error("PayEvo Recusou:", payevoData);
       return res.status(payevoResponse.status).json({
-        error: "PayEvo recusou a transação",
+        error: "PayEvo recusou",
         details: payevoData,
       });
     }
 
-    // 6. Enviar para Utmify (Status Inicial: waiting_payment)
+    // 5. Enviar para Utmify
     try {
-      // Formato de data exigido pela Utmify: YYYY-MM-DD HH:MM:SS
       const nowUtmify = new Date().toISOString().replace("T", " ").split(".")[0];
-
       await fetch("https://api.utmify.com.br/api-credentials/orders", {
         method: "POST",
         headers: {
@@ -111,10 +107,8 @@ export default async function handler(req, res) {
           paymentMethod: "pix",
           status: "waiting_payment",
           createdAt: nowUtmify,
-          approvedDate: null,
-          refundedAt: null,
           customer: { 
-            name, 
+            name: nomeCompleto, 
             email, 
             phone: cleanPhone, 
             document: cleanCpf 
@@ -127,15 +121,7 @@ export default async function handler(req, res) {
               priceInCents: valueInCents,
             },
           ],
-          trackingParameters: {
-            src: src || null,
-            sck: sck || null,
-            utm_source: utm_source || null,
-            utm_campaign: utm_campaign || null,
-            utm_medium: utm_medium || null,
-            utm_content: utm_content || null,
-            utm_term: utm_term || null,
-          },
+          trackingParameters: { src, sck, utm_source, utm_campaign, utm_medium, utm_content, utm_term },
           commission: {
             totalPriceInCents: valueInCents,
             gatewayFeeInCents: 0,
@@ -144,17 +130,14 @@ export default async function handler(req, res) {
         }),
       });
     } catch (utmErr) {
-      // Erro na Utmify não deve travar o checkout principal
-      console.error("Erro Utmify (Non-blocking):", utmErr);
+      console.error("Utmify Error:", utmErr);
     }
 
-    // Retornar dados da transação para o frontend (ex: QR Code do PIX)
     return res.status(200).json(payevoData);
 
   } catch (error) {
-    console.error("Checkout Global Error:", error.message);
     return res.status(500).json({
-      error: "Erro interno no checkout",
+      error: "Erro interno",
       message: error.message,
     });
   }
