@@ -78,7 +78,7 @@ export default async function handler(req, res) {
           ],
           amount: valueInCents,
           postbackUrl: "https://selectwines.online/api/webhook-payevo",
-          description: product_name || "Compra Select Wines",
+          description: product_name || "Varejo",
         }),
       }
     );
