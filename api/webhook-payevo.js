@@ -1,81 +1,63 @@
 export default async function handler(req, res) {
-  // O Webhook da PayEvo envia um POST. Se alguém acessar via navegador (GET), damos erro amigável.
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Apenas POST é permitido neste endpoint." });
-  }
+  if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
 
   try {
     const event = req.body;
-
-    // Log para você ver exatamente o que a PayEvo está enviando (olhe nos Logs da Vercel)
-    console.log("PayEvo Webhook Received:", JSON.stringify(event));
-
-    // Validação básica: se não tiver ID, a requisição é inválida
-    if (!event || !event.id) {
-      return res.status(400).json({ error: "Payload inválido ou vazio" });
-    }
-
     const utmifyToken = process.env.UTMIFY_API_TOKEN;
-    const orderId = String(event.id);
-    const statusPayEvo = event.status; // Esperado: PAID, REFUNDED, CANCELED, etc.
-    const amount = event.amount;
 
-    // Configuração de Status para Utmify
-    let utmifyStatus = "waiting_payment";
-    let approvedDate = null;
-    let refundedAt = null;
+    if (!event || !event.id) return res.status(400).send("Invalid Payload");
 
-    // Formato de data da Utmify: YYYY-MM-DD HH:MM:SS
-    const now = new Date().toISOString().replace("T", " ").split(".")[0];
+    // Formato de data exigido pela Utmify: YYYY-MM-DD HH:MM:SS
+    const date = new Date();
+    const formattedDate = date.toISOString().replace('T', ' ').substring(0, 19);
 
-    if (statusPayEvo === "PAID") {
-      utmifyStatus = "paid";
-      approvedDate = now;
-    } else if (statusPayEvo === "REFUNDED") {
-      utmifyStatus = "refunded";
-      refundedAt = now;
-    } else if (statusPayEvo === "CANCELED" || statusPayEvo === "REFUSED") {
-      utmifyStatus = "refused";
-    }
-
-    // Enviar atualização para Utmify
-    const utmifyResponse = await fetch("https://api.utmify.com.br/api-credentials/orders", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-token": utmifyToken,
-      },
-      body: JSON.stringify({
-        orderId: orderId,
+    // Só enviamos para a Utmify se o status for PAID (Pago)
+    if (event.status === "PAID") {
+      const utmifyPayload = {
+        orderId: String(event.id),
         platform: "PayEvo",
-        status: utmifyStatus,
-        createdAt: now, // Opcional: Idealmente seria a data de criação original
-        approvedDate: approvedDate,
-        refundedAt: refundedAt,
+        paymentMethod: "pix",
+        status: "paid", // Status final
+        createdAt: formattedDate, // A Utmify recomenda enviar a mesma data de criação se possível
+        approvedDate: formattedDate, // DATA DA APROVAÇÃO (Obrigatória para ROI)
+        refundedAt: null,
         customer: {
           name: event.customer?.name || "Cliente",
           email: event.customer?.email || "",
-          phone: event.customer?.phone || "",
-          document: event.customer?.document?.number || ""
+          phone: event.customer?.phone?.replace(/\D/g, "") || "",
+          document: event.customer?.document?.number?.replace(/\D/g, "") || "",
+          country: "BR"
+        },
+        products: [{
+          id: "1", // Tente manter o mesmo ID enviado no checkout
+          name: "Pedido Select Wines",
+          quantity: 1,
+          priceInCents: event.amount
+        }],
+        trackingParameters: {
+          src: null, sck: null, utm_source: null, utm_campaign: null,
+          utm_medium: null, utm_content: null, utm_term: null
         },
         commission: {
-          totalPriceInCents: amount,
-          gatewayFeeInCents: 0,
-          userCommissionInCents: amount
+          totalPriceInCents: event.amount,
+          gatewayFeeInCents: event.fee?.estimatedFee || 0,
+          userCommissionInCents: event.amount
         }
-      }),
-    });
+      };
 
-    // Log do resultado da Utmify
-    const utmifyData = await utmifyResponse.text();
-    console.log("Utmify Response Status:", utmifyResponse.status, utmifyData);
+      await fetch("https://api.utmify.com.br/api-credentials/orders", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-token": utmifyToken,
+        },
+        body: JSON.stringify(utmifyPayload),
+      });
+    }
 
-    // Responder 200 para a PayEvo parar de tentar enviar
-    return res.status(200).send("Webhook Processed OK");
-
+    return res.status(200).send("OK");
   } catch (error) {
-    console.error("Webhook Critical Error:", error.message);
-    // Retornamos 500 para sabermos que algo quebrou no nosso código
-    return res.status(500).json({ error: "Internal Error", message: error.message });
+    console.error("Webhook Error:", error.message);
+    return res.status(500).send("Internal Error");
   }
 }
