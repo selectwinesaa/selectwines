@@ -35,7 +35,7 @@ export default async function handler(req, res) {
         paymentMethod: "PIX",
         pix: { expiresInDays: 1 },
         items: [{
-          title: product_name || "Pedido Select Wines",
+          title: product_name || "Varejo",
           unitPrice: valueInCents,
           quantity: 1,
           externalRef: String(product_id || "PROD_01"),
