@@ -22,7 +22,14 @@ export default async function handler(req, res) {
     } = req.body;
 
     // Basic Auth conforme documentação PayEvo
-    const basicAuth = Buffer.from(process.env.PAYEVO_API_KEY).toString("base64");
+    const secretKey = process.env.PAYEVO_API_KEY;
+    if (!secretKey) {
+      console.error("PAYEVO_API_KEY não configurada!");
+      return res.status(500).json({ error: "PAYEVO_API_KEY não configurada" });
+    }
+    const basicAuth = typeof Buffer !== "undefined"
+      ? Buffer.from(secretKey).toString("base64")
+      : btoa(secretKey);
 
     const payevoBody = {
       customer: {
